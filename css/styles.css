@@ -323,6 +323,18 @@ h3 { font-weight: 600; font-size: var(--fs-lg); line-height: 1.3; margin: var(--
   .links:has(.mat) { display: flex; gap: var(--s1) var(--s4); }
   .links .slot { display: none; }
 }
+/* Sessões com faixa de horário, salas lado a lado e horários a definir */
+.session h3 .faixa { font-weight: 400; color: var(--slate); margin-left: var(--s3); font-variant-numeric: tabular-nums; }
+.rooms { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--s2) var(--s6); }
+.toc li.vago-sessao, .rooms .toc li.vago-sessao { grid-template-columns: 1fr; }
+.room h4 { font-family: var(--sans); font-size: var(--fs-sm); font-weight: 600; color: var(--ink); margin: var(--s3) 0 0; }
+.rooms .toc li { grid-template-columns: 96px minmax(0, 1fr); }
+.rooms .toc li .links { grid-column: 2; }
+.toc li.vago .title { font-family: var(--sans); font-size: var(--fs-sm); color: var(--slate); font-style: italic; }
+.toc li.vago:hover { background: transparent; }
+.prog-aviso { font-family: var(--sans); font-size: var(--fs-sm); color: var(--slate); margin: var(--s2) 0 0 !important; }
+@media (max-width: 720px) { .rooms .toc li { grid-template-columns: 1fr; } .rooms .toc li .links { grid-column: auto; } }
+
 .search-count { font-family: var(--sans); font-size: var(--fs-md); color: var(--slate); }
 .hl { background: var(--hl-bg); color: inherit; padding: 0 1px; border-radius: 2px; }
 
@@ -378,6 +390,11 @@ h3 { font-weight: 600; font-size: var(--fs-lg); line-height: 1.3; margin: var(--
 }
 .to-top:hover { background: var(--pencil); }
 .to-top[hidden] { display: none; }
+
+/* Faixa da página de um ano (/2026/) */
+.faixa-ano { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); justify-content: center; align-items: center; padding: var(--s2) var(--gutter); background: var(--pencil-soft); color: var(--ink); font-family: var(--sans); font-size: var(--fs-sm); }
+.faixa-ano a { font-weight: 600; min-height: var(--target); display: inline-flex; align-items: center; }
+[hidden] { display: none !important; }
 
 /* Origem dos dados (planilha) */
 .fonte-dados { font-family: var(--sans); font-size: var(--fs-xs); color: var(--slate); margin: 0 0 var(--s2) !important; display: flex; align-items: center; gap: var(--s2); }

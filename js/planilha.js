@@ -8,7 +8,7 @@
 
   Regras de leitura:
   - Cada aba cujo nome tem um ano (ex.: "2025") vira uma edição.
-  - A aba "Evento" (opcional) tem pares Chave | Valor com os dados da edição atual.
+  - A aba "Configuracao" (opcional) tem pares Campo | Conteúdo com os textos do site.
   - Em cada aba de edição, a linha de cabeçalho é a que contém "Autor".
     Colunas reconhecidas pelo nome: Sessão, Horário, Autor, Trabalho/Título,
     Artigo, Apresentação/Slides, Vídeo, Coordenadores.
@@ -133,10 +133,18 @@
   function norm(s) { return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim(); }
   function clean(s) { return String(s || "").replace(/\s+/g, " ").trim(); }
   function cellText(row, k) { return k == null || !row[k] ? "" : clean(row[k].v); }
+  // Segurança: só aceita links http(s). Descarta "javascript:", "data:" e outros esquemas
+  // que alguém poderia colar na planilha.
+  function urlSegura(u) {
+    if (!u) return null;
+    u = String(u).trim().replace(/\*+$/, "");
+    try { var p = new URL(u); return p.protocol === "https:" || p.protocol === "http:" ? p.href : null; }
+    catch (e) { return null; }
+  }
   function cellUrl(row, k) {
     if (k == null || !row[k]) return null;
-    var c = row[k], u = c.l || (/^https?:\/\/\S+$/.test(clean(c.v)) ? clean(c.v) : null);
-    return u ? u.replace(/\*+$/, "") : null;
+    var c = row[k];
+    return urlSegura(c.l) || urlSegura(/^https?:\/\/\S+$/.test(clean(c.v)) ? clean(c.v) : null);
   }
 
   var SIGLAS = /^(MTM|UTFPR|AHP|UTAUT2|RAG|IA|TI|RUS|IES|MQL|CO2|VANETS|LEI|PPGA|STN|ESG|ODS|EAD|TCC|ERP|IOT|API|LLM|PR|SC|SP|RJ|BR)$/;
@@ -158,28 +166,45 @@
   }
   function horario(s) { return clean(s).replace(/\s+(?:às|as|a)\s+|\s*[-–]\s*/i, "–"); }
   function hora(s) { var m = /(\d{1,2})\s*h/.exec(s || ""); return m ? +m[1] : null; }
+  function minutos(s) { var m = /(\d{1,2})\s*[h:]\s*(\d{0,2})/.exec(s || ""); return m ? (+m[1]) * 60 + (+(m[2] || 0)) : null; }
+  function fmtHora(min) { return Math.floor(min / 60) + "h" + ("0" + (min % 60)).slice(-2); }
 
+  /*
+    Lê uma aba de edição. A aba pode ter mais de um bloco lado a lado
+    (Autor | Trabalho | Slides | Vídeo repetidos), por exemplo para duas salas:
+    cada bloco é lido separadamente e usa a mesma coluna de sessão e horário.
+  */
   function lerEdicao(aba, ano, avisos) {
     var L = aba.linhas, h = -1;
     for (var i = 0; i < L.length && h < 0; i++) {
       for (var k = 0; k < L[i].length; k++) if (/^autor/.test(norm(L[i][k] && L[i][k].v))) { h = i; break; }
     }
     if (h < 0) { avisos.push("Aba “" + aba.nome + "”: não encontrei a linha de cabeçalho com “Autor”. A aba foi ignorada."); return null; }
-    var head = L[h], col = {};
+    var head = L[h], dados = L.slice(h + 1);
+
+    // Blocos: um por coluna "Autor"
+    var inicioBlocos = [];
+    head.forEach(function (c, k) { if (/^autor/.test(norm(c && c.v))) inicioBlocos.push(k); });
+    var global = {};
+    var blocos = inicioBlocos.map(function (a, b) { return { autor: a, fim: b + 1 < inicioBlocos.length ? inicioBlocos[b + 1] : Infinity }; });
     head.forEach(function (c, k) {
       var n = norm(c && c.v);
       if (!n) return;
-      if (/^autor/.test(n)) col.autor = k;
-      else if (/^(trabalho|titulo)/.test(n)) col.titulo = k;
-      else if (/^(apresenta|slide)/.test(n)) col.slides = k;
-      else if (/^video/.test(n)) col.video = k;
-      else if (/^coorden/.test(n)) col.coord = k;
-      else if (/^(artigo|pdf)/.test(n)) col.artigo = k;
-      else if (/^sess/.test(n)) col.sessao = k;
-      else if (/^(horario|hora)/.test(n)) col.hora = k;
+      if (/^sess/.test(n)) { if (global.sessao == null) global.sessao = k; return; }
+      if (/^(horario|hora)/.test(n)) { if (global.hora == null) global.hora = k; return; }
+      var bl = blocos.filter(function (x) { return k >= x.autor && k < x.fim; })[0];
+      if (!bl) return;
+      var chave = null;
+      if (/^(trabalho|titulo)/.test(n)) chave = "titulo";
+      else if (/^(apresenta|slide)/.test(n)) chave = "slides";
+      else if (/^video/.test(n)) chave = "video";
+      else if (/^coorden/.test(n)) chave = "coord";
+      else if (/^(artigo|pdf)/.test(n)) chave = "artigo";
+      if (chave && bl[chave] == null) bl[chave] = k;
     });
-    if (col.titulo == null) { avisos.push("Aba “" + aba.nome + "”: falta a coluna “Trabalho” (ou “Título”). A aba foi ignorada."); return null; }
-    var dados = L.slice(h + 1);
+    blocos = blocos.filter(function (b) { return b.titulo != null; });
+    if (!blocos.length) { avisos.push("Aba “" + aba.nome + "”: falta a coluna “Trabalho” (ou “Título”). A aba foi ignorada."); return null; }
+
     function detect(re, skip) {
       var best = null, bestN = 0, width = Math.max.apply(null, dados.map(function (r) { return r.length; }).concat([0]));
       for (var k = 0; k < width; k++) {
@@ -189,106 +214,176 @@
       }
       return best;
     }
-    if (col.hora == null) col.hora = detect(/^\d{1,2}\s*h/i, [col.autor, col.titulo]);
-    if (col.sessao == null) col.sessao = detect(/^sess/i, [col.autor, col.titulo, col.hora]);
+    var ocupadas = [];
+    blocos.forEach(function (b) { ocupadas.push(b.autor, b.titulo); });
+    if (global.hora == null) global.hora = detect(/^\d{1,2}\s*h/i, ocupadas);
+    if (global.sessao == null) global.sessao = detect(/^sess/i, ocupadas.concat([global.hora]));
 
-    // Cabeçalho da aba: local e playlist
-    var local = null, playlist = null;
+    // Cabeçalho da aba: local, playlist e sala de cada bloco
+    var local = null, playlist = null, salas = [];
     L.slice(0, h).forEach(function (r) {
-      r.forEach(function (c) {
+      r.forEach(function (c, k) {
         if (!c) return;
-        if (c.l && /youtube\.com\/playlist/.test(c.l)) playlist = c.l;
+        if (c.l && /youtube\.com\/playlist/.test(c.l)) playlist = urlSegura(c.l);
         String(c.v || "").split(/\n/).map(clean).forEach(function (line) {
-          if (line && !/^SIMPA\s*\d{4}$/i.test(line) && !/^simp[oó]sio de administra/i.test(line) && !/^https?:/.test(line)) local = local || line;
+          if (!line) return;
+          if (/^sala\b/i.test(line)) { salas.push({ k: k, v: line }); return; }
+          if (!/^SIMPA\s*\d{4}$/i.test(line) && !/^simp[oó]sio de administra/i.test(line) && !/^https?:/.test(line)) local = local || line;
         });
       });
     });
-
-    var ed = { ano: ano, nome: "SIMPA " + ano, local: local, playlist: playlist, abertura: null, sessoes: [] };
-    var cur = null, porTurno = col.sessao == null;
-    var turnos = { "Manhã": { nome: "Manhã", trabalhos: [] }, "Tarde": { nome: "Tarde", trabalhos: [] } };
-    dados.forEach(function (r, idx) {
-      var ses = cellText(r, col.sessao);
-      if (/^sess/i.test(ses)) {
-        cur = { nome: ses.replace(/^sess[aã]o\s*/i, "Sessão "), trabalhos: [] };
-        ed.sessoes.push(cur);
-      }
-      var autor = cellText(r, col.autor), tit = cellText(r, col.titulo), hor = cellText(r, col.hora);
-      if (!autor && !tit) return;
-      if (autor === "-" || /in[ií]cio dos trabalhos/i.test(tit)) {
-        ed.abertura = { horario: horario(hor), titulo: tit || "Início dos trabalhos", autor: autor === "-" ? cellText(r, col.coord) : autor, video: cellUrl(r, col.video) };
-        return;
-      }
-      if (!tit) { avisos.push("Aba “" + aba.nome + "”, linha " + (h + idx + 2) + ": autor sem título do trabalho."); return; }
-      var remoto = /\(remot[oa]\)/i.test(autor);
-      var t = {
-        horario: horario(hor),
-        autor: clean(autor.replace(/\(remot[oa]\)/i, "")) || "Autor não informado",
-        remoto: remoto,
-        titulo: titulo(tit),
-        artigo: col.artigo != null ? cellUrl(r, col.artigo) : cellUrl(r, col.titulo),
-        slides: cellUrl(r, col.slides),
-        video: cellUrl(r, col.video),
-        coordenacao: cellText(r, col.coord) || null
-      };
-      if (porTurno) {
-        var hh = hora(hor);
-        turnos[hh != null && hh >= 12 ? "Tarde" : "Manhã"].trabalhos.push(t);
-      } else {
-        if (!cur) { cur = { nome: "Sessão", trabalhos: [] }; ed.sessoes.push(cur); }
-        cur.trabalhos.push(t);
-      }
+    blocos.forEach(function (b) {
+      var cand = salas.filter(function (s) { return s.k <= b.autor; }).sort(function (x, y) { return y.k - x.k; })[0] || salas[0];
+      b.sala = cand ? cand.v : null;
     });
-    if (porTurno) ed.sessoes = [turnos["Manhã"], turnos["Tarde"]].filter(function (s) { return s.trabalhos.length; });
+
+    // Faixa de horário da aba (primeiro início e último término)
+    var ini = null, fim = null;
+    dados.forEach(function (r) {
+      var t = cellText(r, global.hora);
+      if (!/^\d{1,2}\s*h/i.test(t)) return;
+      var partes = t.split(/\s+(?:às|as|a)\s+|\s*[-–]\s*/i);
+      var a = minutos(partes[0]), z = minutos(partes[1] || partes[0]);
+      if (a != null && (ini == null || a < ini)) ini = a;
+      if (z != null && (fim == null || z > fim)) fim = z;
+    });
+
+    var ed = {
+      ano: ano, nome: "SIMPA " + ano, local: local, playlist: playlist, abertura: null, sessoes: [],
+      sala: blocos[0].sala || null, faixa: ini != null ? { inicio: fmtHora(ini), fim: fmtHora(fim) } : null
+    };
+    var porTurno = global.sessao == null;
+    var nomeSessao = null, ordem = [];
+    var porBloco = blocos.map(function () { return {}; });
+    function grupoDe(hor) {
+      var g = porTurno ? ((hora(hor) != null && hora(hor) >= 12) ? "Tarde" : "Manhã") : (nomeSessao || "Sessão");
+      if (ordem.indexOf(g) < 0) { if (g === "Sessão") ordem.unshift(g); else ordem.push(g); }
+      return g;
+    }
+    dados.forEach(function (r, idx) {
+      var ses = cellText(r, global.sessao);
+      if (/^sess/i.test(ses)) { nomeSessao = ses.replace(/^sess[aã]o\s*/i, "Sessão "); if (ordem.indexOf(nomeSessao) < 0) ordem.push(nomeSessao); }
+      var hor = cellText(r, global.hora);
+      var temHorario = /^\d{1,2}\s*h/i.test(hor);
+      blocos.forEach(function (b, bi) {
+        var autor = cellText(r, b.autor), tit = cellText(r, b.titulo);
+        if (!autor && !tit) {
+          // Horário reservado ainda sem trabalho: entra como "A definir"
+          if (temHorario && (nomeSessao || porTurno)) {
+            var gv = grupoDe(hor);
+            (porBloco[bi][gv] = porBloco[bi][gv] || []).push({ horario: horario(hor), vago: true });
+          }
+          return;
+        }
+        if (autor === "-" || /in[ií]cio dos trabalhos/i.test(tit)) {
+          if (!ed.abertura) ed.abertura = { horario: horario(hor), titulo: tit || "Início dos trabalhos", autor: autor === "-" ? cellText(r, b.coord) : autor, video: cellUrl(r, b.video) };
+          return;
+        }
+        if (!tit) { avisos.push("Aba “" + aba.nome + "”, linha " + (h + idx + 2) + ": autor sem título do trabalho."); return; }
+        var t = {
+          horario: horario(hor),
+          autor: clean(autor.replace(/\(remot[oa]\)/i, "")) || "Autor não informado",
+          remoto: /\(remot[oa]\)/i.test(autor),
+          titulo: titulo(tit),
+          artigo: b.artigo != null ? cellUrl(r, b.artigo) : cellUrl(r, b.titulo),
+          slides: cellUrl(r, b.slides),
+          video: cellUrl(r, b.video),
+          coordenacao: cellText(r, b.coord) || null
+        };
+        var g = grupoDe(hor);
+        (porBloco[bi][g] = porBloco[bi][g] || []).push(t);
+      });
+    });
+    if (porTurno) ordem = ["Manhã", "Tarde"].filter(function (g) { return ordem.indexOf(g) >= 0; });
+    // Mais de uma sala: cada sessão aparece com uma coluna por sala
+    var variasSalas = blocos.length > 1;
+    ordem.forEach(function (g) {
+      porBloco.forEach(function (pb, bi) {
+        if (!pb[g]) return;
+        ed.sessoes.push({ nome: g, bloco: bi, salaNome: blocos[bi].sala || null, sala: variasSalas ? (blocos[bi].sala || "Sala " + (bi + 1)) : null, trabalhos: pb[g] });
+      });
+    });
     return ed;
   }
 
-  // Aba "Evento": Chave | Valor
+  // ---------------------------------------------------------------- Aba de configuração
+  // Aceita "Campo | Conteúdo" (aba Configuracao) e o modelo antigo "Chave | Valor" (aba Evento).
   var CHAVES = {
-    "ano": "ano", "edicao": "ano", "nome": "nome", "data": "data", "data do evento": "data",
-    "data por extenso": "dataExtenso", "horario": "periodo", "periodo": "periodo",
-    "inicio": "inicio", "abertura": "inicio", "horario de inicio": "inicio",
-    "termino": "horarioFim", "fim": "horarioFim", "horario de termino": "horarioFim",
-    "local": "local", "endereco": "endereco", "sala": "sala", "formato": "formato",
-    "prazo de submissao": "prazoSubmissao", "prazo": "prazoSubmissao",
-    "link da transmissao": "linkRemoto", "transmissao": "linkRemoto", "google meet": "linkRemoto",
-    "playlist": "playlist", "responsaveis pela abertura": "responsaveis", "responsaveis": "responsaveis"
+    nomeevento: "nomeEvento", ano: "ano", edicao: "ano", nome: "nome", resumo: "resumo",
+    data: "data", datadoevento: "data", dataporextenso: "dataExtenso",
+    horario: "periodo", periodo: "periodo",
+    inicio: "inicio", abertura: "inicio", horariodeinicio: "inicio",
+    termino: "horarioFim", fim: "horarioFim", horariodetermino: "horarioFim",
+    local: "local", endereco: "endereco", sala: "sala", formato: "formato", quando: "quando",
+    destaque: "destaqueSobre", subtitulo: "tituloSobre", resumosubtitulo: "textoSobre", complementoresumosubtitulo: "topicos",
+    destaqueprogramacao: "destaqueProgramacao", programacao: "tituloProgramacao",
+    destaquelocal: "destaqueLocal", subtitulo2: "tituloLocal",
+    linkdatransmissao: "linkRemoto", transmissao: "linkRemoto", googlemeet: "linkRemoto",
+    assistiradistancia: "remoto", assistirremotamente: "remoto",
+    tituloanais: "tituloAnais", edicoesanteriores: "tituloAnais", destaqueanais: "destaqueAnais", textoanais: "textoAnais",
+    botaoprincipal: "botao1", botao1: "botao1", botaosecundario: "botao2", botao2: "botao2",
+    organizacao: "organizacao",
+    salas: "salas", quantidadedesalas: "salas", numerodesalas: "salas", qtdsalas: "salas",
+    playlist: "playlist", responsaveispelaabertura: "responsaveis", responsaveis: "responsaveis"
   };
-  function serialParaISO(n) {
-    var d = new Date(Math.round((n - 25569) * 86400000));
-    return d.toISOString().slice(0, 10);
-  }
+  var MESES = { janeiro: 1, fevereiro: 2, marco: 3, abril: 4, maio: 5, junho: 6, julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12 };
+  function serialParaISO(n) { return new Date(Math.round((n - 25569) * 86400000)).toISOString().slice(0, 10); }
   function dataISO(c) {
     if (!c) return null;
     if (c.n != null && !isNaN(c.n) && c.n > 30000 && c.n < 80000) return serialParaISO(c.n);
     var s = clean(c.v), m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
     if (m) return m[3] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[1]).slice(-2);
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    m = /(\d{1,2})\s+de\s+([a-z]+)\s+de\s+(\d{4})/.exec(norm(s));
+    if (m && MESES[m[2]]) return m[3] + "-" + ("0" + MESES[m[2]]).slice(-2) + "-" + ("0" + m[1]).slice(-2);
     return null;
   }
   function horaTexto(c) {
     if (!c) return null;
-    if (c.n != null && !isNaN(c.n) && c.n > 0 && c.n < 1) { var min = Math.round(c.n * 1440); return Math.floor(min / 60) + "h" + ("0" + (min % 60)).slice(-2); }
+    if (c.n != null && !isNaN(c.n) && c.n > 0 && c.n < 1) return fmtHora(Math.round(c.n * 1440));
     return clean(c.v).replace(/^(\d{1,2}):(\d{2})$/, "$1h$2") || null;
   }
-  function lerEvento(aba) {
-    var ev = {};
+  // Mantém as quebras de linha (parágrafos e listas)
+  function textoMultilinha(c) {
+    return String(c.v || "").replace(/\r/g, "").split("\n").map(function (l) { return l.replace(/\s+/g, " ").trim(); }).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  function lerConfig(aba) {
+    var ev = {}, presentes = {};
     aba.linhas.forEach(function (r) {
-      var key = CHAVES[norm(r[0] && r[0].v).replace(/[:]/g, "")];
-      if (!key || !r[1]) return;
+      var key = CHAVES[norm(r[0] && r[0].v).replace(/[\s:_\-.]/g, "")];
+      if (!key) return;
+      presentes[key] = true;
       var c = r[1];
-      if (key === "data" || key === "prazoSubmissao") ev[key] = dataISO(c);
+      if (!c || (!clean(c.v) && !c.l)) { ev[key] = null; return; }
+      if (key === "data") {
+        // aceita {ano} na data (ex.: "Sábado, 12 de dezembro de {ano}")
+        var dc = c.n != null ? c : { v: clean(c.v).replace(/\{\s*ano\s*\}/gi, ev.ano || new Date().getFullYear()), n: null };
+        ev.data = dataISO(dc);
+        if (c.n == null && !/^\d/.test(clean(dc.v))) ev.dataExtenso = clean(dc.v);
+      }
       else if (key === "inicio" || key === "horarioFim") ev[key] = horaTexto(c);
       else if (key === "ano") ev.ano = parseInt(clean(c.v), 10) || null;
-      else if (key === "linkRemoto" || key === "playlist") ev[key] = c.l || (/^https?:/.test(clean(c.v)) ? clean(c.v) : null);
-      else ev[key] = clean(c.v) || null;
+      else if (key === "salas") { var ns = parseInt(clean(c.v), 10); ev.salas = ns === 1 || ns === 2 ? ns : null; }
+      else if (key === "linkRemoto" || key === "playlist") ev[key] = urlSegura(c.l) || urlSegura(/^https?:/.test(clean(c.v)) ? clean(c.v) : null);
+      else if (key === "remoto") {
+        // "Assistir à distância": um link vira o botão da transmissão; um texto vira o aviso
+        var u = urlSegura(c.l) || urlSegura(/^https?:\/\/\S+$/.test(clean(c.v)) ? clean(c.v) : null);
+        if (u) ev.linkRemoto = u; else ev.textoRemoto = clean(c.v);
+      }
+      else if (key === "textoSobre" || key === "topicos" || key === "organizacao") ev[key] = textoMultilinha(c);
+      else ev[key] = clean(c.v);
     });
+    ev._presentes = presentes;
     return ev;
   }
   function extenso(iso) {
     var d = new Date(iso + "T12:00:00-03:00");
     var s = d.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "America/Sao_Paulo" });
     return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  function diaMes(iso) {
+    return new Date(iso + "T12:00:00-03:00").toLocaleDateString("pt-BR", { day: "numeric", month: "long", timeZone: "America/Sao_Paulo" });
   }
 
   // ---------------------------------------------------------------- API
@@ -305,39 +400,113 @@
     return montar(abas, cfg);
   }
 
+  /*
+    Abas de configuração: uma por ano, "Configuracao_2026", "Configuracao_2027"...
+    (também aceita "Configuracao" sem ano, usada para qualquer ano sem aba própria).
+    - Página principal: usa a configuração do ano corrente; se não houver, a do ano mais recente.
+    - Página de um ano (/2026/): usa a Configuracao_2026.
+  */
+  function ehConfig(a) { return /^(config|evento)/.test(norm(a.nome)); }
+  function anoDaAba(a) { var m = /(\d{4})/.exec(a.nome); return m ? +m[1] : null; }
+  function escolherConfig(abas, anoPagina) {
+    var cfgs = abas.filter(ehConfig);
+    var semAno = cfgs.filter(function (a) { return anoDaAba(a) == null; })[0] || null;
+    var comAno = cfgs.filter(function (a) { return anoDaAba(a) != null; });
+    if (anoPagina) return comAno.filter(function (a) { return anoDaAba(a) === anoPagina; })[0] || semAno;
+    var corrente = new Date().getFullYear();
+    var doAno = comAno.filter(function (a) { return anoDaAba(a) === corrente; })[0];
+    if (doAno) return doAno;
+    comAno.sort(function (x, y) { return anoDaAba(y) - anoDaAba(x); });
+    return comAno[0] || semAno;
+  }
+
   function montar(abas, cfg) {
-    var avisos = [], base = JSON.parse(JSON.stringify(cfg.eventoPadrao || {}));
-    var abaEvento = abas.filter(function (a) { return /^(evento|config)/.test(norm(a.nome)); })[0];
-    var ev = abaEvento ? lerEvento(abaEvento) : {};
-    if (!abaEvento) avisos.push("Não há aba “Evento”. Usando os dados padrão do evento definidos em data/simpa-2026.js.");
-    var atual = Object.assign(base, Object.keys(ev).reduce(function (o, k) { if (ev[k] != null) o[k] = ev[k]; return o; }, {}));
-    atual.ano = atual.ano || new Date().getFullYear();
-    if (ev.ano && !ev.nome) atual.nome = "SIMPA " + atual.ano;
-    if (ev.data && !ev.dataExtenso) atual.dataExtenso = extenso(atual.data);
+    var avisos = [], anoPagina = cfg.anoPagina || null;
+    var abaCfg = escolherConfig(abas, anoPagina);
+    var ev = abaCfg ? lerConfig(abaCfg) : { _presentes: {} };
+    // Ano da edição: o da página (/2026/), senão o da configuração, senão o do nome da aba, senão o ano corrente
+    var anoEd = anoPagina || ev.ano || (abaCfg && anoDaAba(abaCfg)) || new Date().getFullYear();
+    // Os textos padrão do site (data/simpa-2026.js) só valem para o ano deles
+    var padrao = cfg.eventoPadrao || {};
+    var atual = JSON.parse(JSON.stringify(padrao.ano === anoEd ? padrao : { local: padrao.local, endereco: padrao.endereco, formato: null, abertura: { titulo: "Início dos trabalhos" } }));
+    if (!abaCfg) avisos.push("Não há aba “Configuracao_" + anoEd + "”. Usando os textos padrão do site.");
+    var tem = ev._presentes;
+    Object.keys(ev).forEach(function (k) { if (k !== "_presentes" && ev[k] != null) atual[k] = ev[k]; });
+    // Se não existir aba do ano (ou ela estiver vazia), o site mostra que a programação ainda não foi publicada.
+    atual.ano = anoEd;
+    atual.abaConfig = abaCfg ? abaCfg.nome : null;
+    atual.nome = ev.nome || "SIMPA " + atual.ano;
+    if (ev.data && !ev.dataExtenso) atual.dataExtenso = extenso(ev.data);
+    if (tem.data && !ev.data) avisos.push("Não entendi a data da configuração. Use, por exemplo, “Sábado, 12 de dezembro de 2026” ou 12/12/2026.");
     atual.abertura = atual.abertura || { titulo: "Início dos trabalhos" };
     if (ev.inicio) atual.abertura.horario = ev.inicio;
     if (ev.responsaveis) atual.abertura.autor = ev.responsaveis;
+    // Campo "Programacao" presente e vazio = ainda não mostrar a programação
+    atual.mostrarProgramacao = !(tem.tituloProgramacao && !ev.tituloProgramacao);
+    // Campo de tópicos presente e vazio = esconder a lista
+    if (tem.topicos && !ev.topicos) atual.topicos = null;
 
-    var historico = [], abasLidas = [];
+    var historico = [], abasLidas = [], edAtual = null;
     abas.forEach(function (a) {
-      if (a === abaEvento) { abasLidas.push({ nome: a.nome, tipo: "Evento" }); return; }
+      if (ehConfig(a)) { abasLidas.push({ nome: a.nome, tipo: a === abaCfg ? "Configuração em uso" : "Configuração de outro ano" }); return; }
       var m = /(\d{4})/.exec(a.nome);
       if (!m) { abasLidas.push({ nome: a.nome, tipo: "Ignorada (o nome não tem ano)" }); return; }
       var ano = +m[1], ed = lerEdicao(a, ano, avisos);
       if (!ed) { abasLidas.push({ nome: a.nome, tipo: "Com erro" }); return; }
-      var n = ed.sessoes.reduce(function (s, x) { return s + x.trabalhos.length; }, 0);
-      if (ano === atual.ano) {
-        atual.sessoes = ed.sessoes;
-        if (ed.abertura) atual.abertura = Object.assign({}, atual.abertura, ed.abertura, { horario: ed.abertura.horario || atual.abertura.horario });
-        if (ed.playlist && !atual.playlist) atual.playlist = ed.playlist;
-        abasLidas.push({ nome: a.nome, tipo: "Edição atual", trabalhos: n, sessoes: ed.sessoes.length });
-      } else {
-        historico.push(ed);
-        abasLidas.push({ nome: a.nome, tipo: ano > atual.ano ? "Edição futura (aparece no histórico)" : "Histórico", trabalhos: n, sessoes: ed.sessoes.length });
+      var n = ed.sessoes.reduce(function (s, x) { return s + x.trabalhos.filter(function (t) { return !t.vago; }).length; }, 0);
+      if (ano === atual.ano) { edAtual = ed; abasLidas.push({ nome: a.nome, tipo: "Edição atual", trabalhos: n, sessoes: ed.sessoes.length }); }
+      // Edições anteriores: só anos antes da edição exibida (a página de 2026 não mostra 2027)
+      else if (ano < atual.ano) { if (n) historico.push(ed); abasLidas.push({ nome: a.nome, tipo: "Histórico", trabalhos: n, sessoes: ed.sessoes.length }); }
+      else abasLidas.push({ nome: a.nome, tipo: "Edição futura (não exibida)", trabalhos: n });
+    });
+
+    atual.temAbaDoAno = !!edAtual;
+    if (!edAtual) avisos.push("Não há aba “" + atual.ano + "”. A programação aparece como “ainda não publicada” até a aba ser criada.");
+    // Completa com a aba do ano, sem sobrepor o que a configuração já define
+    if (edAtual) {
+      // Salas: 1 = só o primeiro bloco da aba (CA302); 2 = os dois blocos lado a lado.
+      // Vazio = automático (quantos blocos houver na aba).
+      var blocosNaAba = edAtual.sessoes.reduce(function (m, s) { return Math.max(m, (s.bloco || 0) + 1); }, 0);
+      var salas = ev.salas || blocosNaAba || 1;
+      if (ev.salas === 2 && blocosNaAba < 2) avisos.push("A configuração pede 2 salas, mas a aba “" + atual.ano + "” só tem um bloco Autor | Trabalho. Mostrando uma sala.");
+      edAtual.sessoes = edAtual.sessoes.filter(function (s) { return (s.bloco || 0) < salas; }).map(function (s) {
+        return Object.assign({}, s, { sala: salas > 1 && blocosNaAba > 1 ? (s.salaNome || "Sala " + ((s.bloco || 0) + 1)) : null });
+      });
+      atual.salas = Math.min(salas, Math.max(blocosNaAba, 1));
+      // Com duas salas e o campo Sala vazio, "Como chegar" mostra as duas
+      if (!ev.sala && atual.salas > 1) {
+        var nomes = [];
+        edAtual.sessoes.forEach(function (s) { if (s.salaNome && nomes.indexOf(s.salaNome) < 0) nomes.push(s.salaNome); });
+        if (nomes.length > 1) edAtual.sala = nomes.join(" e ");
+      }
+      atual.sessoes = edAtual.sessoes;
+      if (edAtual.abertura) atual.abertura = Object.assign({}, atual.abertura, edAtual.abertura, { horario: ev.inicio || edAtual.abertura.horario || atual.abertura.horario });
+      if (!ev.sala && edAtual.sala) atual.sala = edAtual.sala;
+      if (!ev.playlist && edAtual.playlist) atual.playlist = edAtual.playlist;
+      if (edAtual.faixa) {
+        if (!ev.periodo) atual.periodo = edAtual.faixa.inicio + " às " + edAtual.faixa.fim;
+        if (!ev.horarioFim) atual.horarioFim = edAtual.faixa.fim;
+        if (!ev.inicio && !(edAtual.abertura && edAtual.abertura.horario)) atual.abertura.horario = edAtual.faixa.inicio;
+      }
+    }
+    atual.sessoes = atual.sessoes || [];
+    if (!ev.destaqueProgramacao) atual.destaqueProgramacao = atual.data ? diaMes(atual.data) : "SIMPA " + atual.ano;
+    if (!tem.tituloProgramacao) atual.tituloProgramacao = "Programação " + atual.ano;
+    historico.sort(function (a, b) { return b.ano - a.ano; });
+
+    // Etiquetas nos textos: {ano}, {data}, {dia}, {inicio}, {fim}, {local}, {primeiroAno}, {ultimoAno}
+    var anos = historico.map(function (e) { return e.ano; });
+    var tags = {
+      ano: atual.ano, data: atual.dataExtenso || "", dia: atual.data ? diaMes(atual.data) : "",
+      inicio: (atual.abertura && atual.abertura.horario || "").split("–")[0], fim: atual.horarioFim || "",
+      local: atual.local || "",
+      primeiroano: anos.length ? Math.min.apply(null, anos) : "", ultimoano: anos.length ? Math.max.apply(null, anos) : ""
+    };
+    Object.keys(atual).forEach(function (k) {
+      if (typeof atual[k] === "string" && k !== "data") {
+        atual[k] = atual[k].replace(/\{\s*([a-zA-ZçÇ]+)\s*\}/g, function (m, t) { var v = tags[norm(t)]; return v != null && v !== "" ? String(v) : m; });
       }
     });
-    atual.sessoes = atual.sessoes || [];
-    historico.sort(function (a, b) { return b.ano - a.ano; });
     return { atual: atual, historico: historico, avisos: avisos, abas: abasLidas, lidoEm: new Date().toISOString() };
   }
 
